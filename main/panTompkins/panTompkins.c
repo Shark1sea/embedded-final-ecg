@@ -2,7 +2,7 @@
 #include <stdio.h> // 用于调试打印，可移除
 
 // --- 算法常量定义 ---
-#define FS 360                               // 采样率 (Hz)
+#define FS 250                               // 采样率 (Hz)，与 ADC_SAMPLE_FREQ_HZ/DOWNSAMPLE_FACTOR 一致
 #define WINDOWSIZE (int)(FS * 0.15)          // 移动积分窗口大小 (150 ms)
 #define BUFFSIZE (FS * 2)                    // 环形缓冲区大小 (2秒)
 #define DELAY (FS + FS/2)                    // 输出延迟(1.5秒), 用于支持回溯搜索。应大于rrmiss的最大可能值。

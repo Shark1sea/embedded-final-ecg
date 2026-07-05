@@ -1,6 +1,6 @@
 {
   "C_Cpp.intelliSenseEngine": "default",
   "idf.extensionActivationMode": "always",
-  "idf.flashType": "JTAG",
+  "idf.flashType": "UART",
   "idf.port": "/dev/ttyACM0"
 }

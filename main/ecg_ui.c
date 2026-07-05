@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
+#include "freertos/portmacro.h"
 
 /* ---- 外部字体 ---- */
 LV_FONT_DECLARE(JiDianHei_18)
@@ -46,6 +47,7 @@ static lv_obj_t *freq_label, *warn_label, *hr_label;
 static lv_obj_t *ecg_cont, *ecg_line, *ecg_indicator;
 static lv_point_t ecg_pts[ECG_POINT_COUNT];
 static uint16_t   ecg_pt_idx;
+static portMUX_TYPE ecg_pts_lock = portMUX_INITIALIZER_UNLOCKED;  // 跨核 spinlock
 static int16_t col_p1[] = { LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST };
 static int16_t row_p1[] = { 60, 60, LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST };
 
@@ -89,8 +91,9 @@ static volatile bool     indicator_dirty;
 static volatile bool     need_indicator_show;
 static volatile bool     reset_dirty;
 static volatile bool     warning_dirty;
-static bool              pending_warn;
-static char              pending_text[48];
+static volatile bool     pending_warn;              // volatile: 跨核读写
+static volatile char     pending_text[48];          // volatile: 跨核读写, 防止字符串撕裂
+static portMUX_TYPE      warning_lock = portMUX_INITIALIZER_UNLOCKED;  // 保护 warning 数据
 
 /* ============================================================
  * 内部辅助: 动画回调
@@ -684,25 +687,34 @@ void ui_flush(void) {
     if (hr_dirty) {
         hr_dirty = false;
         float bpm = pending_hr;
-        if (!hr_label) return;
-        if (bpm < 0) {
-            lv_label_set_text(hr_label, "心率: 计算中...");
-        } else if (bpm == 0) {
-            lv_label_set_text(hr_label, "心率: -- bpm");
-        } else {
-            lv_label_set_text_fmt(hr_label, "心率: %.0f bpm", bpm);
+        if (hr_label) {
+            if (bpm < 0) {
+                lv_label_set_text(hr_label, "心率: 计算中...");
+            } else if (bpm < 1.0f) {
+                lv_label_set_text(hr_label, "心率: -- bpm");
+            } else {
+                lv_label_set_text_fmt(hr_label, "心率: %d bpm", (int)(bpm + 0.5f));
+            }
         }
     }
 
-    // 波形更新
+    // 波形更新 (跨核锁定保护 ecg_pts / ecg_pt_idx)
     if (waveform_dirty) {
         waveform_dirty = false;
-        if (ecg_line) {
-            uint16_t valid = ecg_pt_idx < ECG_POINT_COUNT ? ecg_pt_idx : ECG_POINT_COUNT;
-            lv_line_set_points(ecg_line, ecg_pts, valid);
+        portENTER_CRITICAL(&ecg_pts_lock);
+        uint16_t idx_snap = ecg_pt_idx;
+        uint16_t valid = idx_snap < ECG_POINT_COUNT ? idx_snap : ECG_POINT_COUNT;
+        // 复制一份快照避免 LVGL 在渲染时读取到正在被 Core1 修改的数据
+        static lv_point_t pts_snap[ECG_POINT_COUNT];
+        if (valid > 0) {
+            memcpy(pts_snap, ecg_pts, valid * sizeof(lv_point_t));
+        }
+        portEXIT_CRITICAL(&ecg_pts_lock);
+        if (ecg_line && valid > 0) {
+            lv_line_set_points(ecg_line, pts_snap, valid);
         }
         if (ecg_indicator) {
-            lv_obj_set_x(ecg_indicator, ecg_pt_idx);
+            lv_obj_set_x(ecg_indicator, idx_snap);
         }
     }
 
@@ -721,18 +733,29 @@ void ui_flush(void) {
     // 波形重置
     if (reset_dirty) {
         reset_dirty = false;
+        portENTER_CRITICAL(&ecg_pts_lock);
         memset(ecg_pts, 0, sizeof(ecg_pts));
         ecg_pt_idx = 0;
-        if (ecg_line) lv_line_set_points(ecg_line, ecg_pts, 0);
+        portEXIT_CRITICAL(&ecg_pts_lock);
+        if (ecg_line) {
+            static const lv_point_t empty_pt = {0, 0};
+            lv_line_set_points(ecg_line, &empty_pt, 0);
+        }
         if (ecg_indicator) lv_obj_set_x(ecg_indicator, 0);
     }
 
-    // 警告更新
+    // 警告更新 (跨核锁定保护 pending_text / pending_warn)
     if (warning_dirty) {
         warning_dirty = false;
+        portENTER_CRITICAL(&warning_lock);
+        bool warn_snap = pending_warn;
+        char text_snap[48];
+        strncpy(text_snap, (const char *)pending_text, sizeof(text_snap) - 1);
+        text_snap[sizeof(text_snap) - 1] = '\0';
+        portEXIT_CRITICAL(&warning_lock);
         if (warn_label) {
-            lv_label_set_text(warn_label, pending_text);
-            if (pending_warn) {
+            lv_label_set_text(warn_label, text_snap);
+            if (warn_snap) {
                 lv_obj_add_style(warn_label, &style_warn, 0);
             } else {
                 lv_obj_add_style(warn_label, &style_warn_ok, 0);
@@ -749,6 +772,7 @@ void ui_update_heart_rate(float bpm) {
 void ui_update_waveform(const int16_t *data, uint16_t count) {
     if (!data || !count) return;
 
+    portENTER_CRITICAL(&ecg_pts_lock);
     for (uint16_t i = 0; i < count; i++) {
         int32_t y = 1 + ((int32_t)(data[i] - 11000) * (ECG_DISPLAY_MAX_Y - 1) / (14500 - 11500)) - 30;
         if (y < ECG_DISPLAY_MIN_Y) y = ECG_DISPLAY_MIN_Y;
@@ -759,14 +783,17 @@ void ui_update_waveform(const int16_t *data, uint16_t count) {
         ecg_pt_idx++;
         if (ecg_pt_idx >= ECG_POINT_COUNT) ecg_pt_idx = 0;
     }
+    portEXIT_CRITICAL(&ecg_pts_lock);
     waveform_dirty = true;
 }
 
 void ui_update_warning(const char *text, bool is_warn) {
     if (!text) return;
-    strncpy(pending_text, text, sizeof(pending_text) - 1);
-    pending_text[sizeof(pending_text) - 1] = '\0';
+    portENTER_CRITICAL(&warning_lock);
+    strncpy((char *)pending_text, text, sizeof(pending_text) - 1);
+    ((char *)pending_text)[sizeof(pending_text) - 1] = '\0';
     pending_warn = is_warn;
+    portEXIT_CRITICAL(&warning_lock);
     warning_dirty = true;
 }
 
@@ -777,8 +804,9 @@ void ui_update_sampling_rate_label(void) {
 }
 
 void ui_update_diagnosis(const ecg_diag_result_t *d) {
-    // TODO: 在界面上显示 AI 诊断结果
-    (void)d;
+    if (!d || !d->is_valid) return;
+    bool is_abnormal = (d->diagnosis != DIAG_NORMAL && d->diagnosis != DIAG_UNKNOWN);
+    ui_update_warning(d->text, is_abnormal);
 }
 
 void ui_set_sampling_indicator(bool active) {

@@ -139,7 +139,11 @@ void hw_adc_deinit(void)
 
 bool hw_adc_read(uint8_t *buf, uint32_t len, uint32_t *out)
 {
-    return (adc_continuous_read(adc_handle, buf, len, out, 0) == ESP_OK);
+    esp_err_t ret = adc_continuous_read(adc_handle, buf, len, out, 100);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "ADC read error: %d", ret);
+    }
+    return (ret == ESP_OK);
 }
 
 void hw_read_adc_status(bool *lon, bool *lop)

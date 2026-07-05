@@ -29,17 +29,30 @@ static const char *TAG = "MAIN";
 
 /* ---- 任务句柄 ---- */
 static TaskHandle_t task_ecg      = NULL;
-static TaskHandle_t task_buzzer   = NULL;
-static TaskHandle_t task_warn     = NULL;
 
 /* ---- 状态 ---- */
 static volatile bool sampling_active = false;
-static volatile bool alarm_active    = false;
 static float          current_hr     = 0.0f;
 
 /* ---- 阈值 ---- */
 static uint16_t alarm_high = HIGH_ALARM_DEFAULT;
 static uint16_t alarm_low  = LOW_ALARM_DEFAULT;
+
+/* ---- 标签状态追踪: 只在状态变化时更新 UI, 避免高频 spinlock ---- */
+static int  prev_abnormal = -1;   // -1=初始, 0=正常, 1=异常
+static uint32_t last_warn_tick = 0;
+static uint32_t last_ai_tick   = 0;
+
+/* ============================================================
+ * 预留: 警报动作接口 (未来可接入 BLE/WiFi 通知)
+ * ============================================================ */
+typedef void (*alarm_action_cb_t)(float bpm, bool is_abnormal);
+static alarm_action_cb_t alarm_action_cb = NULL;
+
+void ecg_register_alarm_action(alarm_action_cb_t cb)
+{
+    alarm_action_cb = cb;
+}
 
 /* ============================================================
  * UI 回调 (UI → main)
@@ -70,50 +83,6 @@ static void on_alarm_high_set(uint16_t bpm) { alarm_high = bpm; }
 static void on_alarm_low_set(uint16_t bpm)  { alarm_low  = bpm; }
 
 /* ============================================================
- * 蜂鸣器警告任务
- * ============================================================ */
-static void buzzer_task(void *pv)
-{
-    esp_task_wdt_add(NULL);
-    while (1) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        if (alarm_active && sampling_active) {
-            ESP_LOGW(TAG, "心率异常: %.1f BPM", (double)current_hr);
-            ui_update_warning("心率异常", true);
-            for (int i = 0; i < 3; i++) {
-                hw_buzzer_on(2000);
-                vTaskDelay(pdMS_TO_TICKS(100));
-                hw_buzzer_off();
-                vTaskDelay(pdMS_TO_TICKS(500));
-            }
-        } else if (!alarm_active && sampling_active) {
-            ui_update_warning("心率正常", false);
-        }
-        esp_task_wdt_reset();
-    }
-    esp_task_wdt_delete(NULL);
-    vTaskDelete(NULL);
-}
-
-/* ============================================================
- * 警告标签闪烁任务
- * ============================================================ */
-static void warn_blink_task(void *pv)
-{
-    esp_task_wdt_add(NULL);
-    for (int i = 0; i < 3; i++) {
-        ui_update_warning("", true);
-        vTaskDelay(pdMS_TO_TICKS(300));
-        // 恢复由 buzzer_task 负责
-        vTaskDelay(pdMS_TO_TICKS(700));
-        esp_task_wdt_reset();
-    }
-    esp_task_wdt_delete(NULL);
-    task_warn = NULL;
-    vTaskDelete(NULL);
-}
-
-/* ============================================================
  * ECG 采样任务 (核心)
  * ============================================================ */
 static void ecg_task(void *pv)
@@ -142,6 +111,8 @@ static void ecg_task(void *pv)
              ADC_SAMPLE_FREQ_HZ, ADC_SAMPLE_FREQ_HZ / DOWNSAMPLE_FACTOR);
 
     while (sampling_active) {
+        esp_task_wdt_reset();
+
         // 读取 ADC
         uint8_t buf[ADC_READ_LEN];
         uint32_t len;
@@ -161,22 +132,14 @@ static void ecg_task(void *pv)
             // DSP 处理
             ecg_dsp_result_t dsp_res;
             if (ecg_dsp_process_raw(raw, &dsp_res)) {
+                // 持续喂 AI 状态机 (轻量级调用)
+                ecg_ai_process(&dsp_res, NULL);
+
                 // 心率更新
                 if (dsp_res.heart_rate > 0) {
                     current_hr = dsp_res.heart_rate;
                     if (dsp_res.qrs_count >= 5) {
                         ui_update_heart_rate(current_hr);
-                    }
-
-                    // 报警检测
-                    alarm_active = (current_hr > alarm_high ||
-                                    current_hr < alarm_low);
-
-                    // AI 诊断
-                    ecg_diag_result_t ai_res;
-                    if (ecg_ai_process(&dsp_res, &ai_res) && ai_res.is_valid) {
-                        ESP_LOGI(TAG, "AI: %s (置信度: %.2f)",
-                                 ai_res.text, (double)ai_res.confidence);
                     }
                 }
 
@@ -185,6 +148,38 @@ static void ecg_task(void *pv)
                 if (filtered_idx >= 3) {
                     ui_update_waveform(&filtered_buf[1], 1); // 中值
                     filtered_idx = 0;
+                }
+            }
+        }
+
+        // --- 以下逻辑每轮只执行一次, 避免在 DSP 内循环中高频调用 ---
+
+        // 标签心率提示 & 预留警报: 状态变化时更新
+        if (current_hr > 0) {
+            int abnormal = (current_hr > alarm_high || current_hr < alarm_low) ? 1 : 0;
+            uint32_t now = xTaskGetTickCount();
+            if (abnormal != prev_abnormal || (now - last_warn_tick >= pdMS_TO_TICKS(5000))) {
+                last_warn_tick = now;
+                prev_abnormal = abnormal;
+                if (abnormal) {
+                    ui_update_warning("心率异常", true);
+                } else {
+                    ui_update_warning("心率正常", false);
+                }
+                // 预留: BLE/WiFi 警报
+                if (alarm_action_cb) {
+                    alarm_action_cb(current_hr, abnormal);
+                }
+            }
+
+            // AI 诊断 (每 5s 输出一次, 同步更新 UI 标签)
+            if (now - last_ai_tick >= pdMS_TO_TICKS(5000)) {
+                last_ai_tick = now;
+                const ecg_diag_result_t *ai_res = ecg_ai_get_last();
+                if (ai_res->is_valid) {
+                    ESP_LOGI(TAG, "AI: %s (置信度: %.2f)",
+                             ai_res->text, (double)ai_res->confidence);
+                    ui_update_diagnosis(ai_res);  // 串连 UI 标签
                 }
             }
         }
@@ -199,7 +194,6 @@ static void ecg_task(void *pv)
     ui_set_sampling_indicator(false);
     ui_update_heart_rate(0);
     current_hr = 0.0f;
-    alarm_active = false;
     ESP_LOGI(TAG, "ECG 采样任务已停止");
 
     esp_task_wdt_delete(NULL);
@@ -227,9 +221,6 @@ void app_main(void)
                      on_backlight_set, on_alarm_high_set, on_alarm_low_set);
     hw_backlight_set(BACKLIGHT_DEFAULT);
 
-    /* ---- 创建蜂鸣器任务 ---- */
-    xTaskCreate(buzzer_task, "buzzer", 2048, NULL, 4, &task_buzzer);
-
     /* ---- 主循环 ---- */
     while (1) {
         uint32_t delay_ms = ui_tick();
@@ -237,14 +228,8 @@ void app_main(void)
 
         // UI 触发 ECG 启动
         if (ui_is_ecg_active() && task_ecg == NULL) {
-            xTaskCreatePinnedToCore(ecg_task, "ecg_sample", 8192, NULL,
+            xTaskCreatePinnedToCore(ecg_task, "ecg_sample", 16384, NULL,
                                     5, &task_ecg, 1);
-        }
-
-        // 报警闪烁
-        if (alarm_active && task_warn == NULL && sampling_active) {
-            xTaskCreatePinnedToCore(warn_blink_task, "warn_blink", 2048,
-                                    NULL, 3, &task_warn, 1);
         }
 
         vTaskDelay(pdMS_TO_TICKS(delay_ms));
