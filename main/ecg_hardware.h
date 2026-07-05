@@ -8,6 +8,7 @@
 #include "esp_adc/adc_continuous.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
+#include "lvgl.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -95,10 +96,9 @@ ecg_hw_state_t* hw_get_state(void);
 // ============= 显示屏句柄获取 =============
 void* hw_get_lcd_panel_handle(void);
 
-// ============= 设置 LVGL display 句柄（用于 flush 完成通知） =============
-// 必须在 lv_display_create 之后调用
-typedef struct _lv_display_t lv_display_t;
-void hw_set_lvgl_display(lv_display_t *disp);
+// ============= 设置 LVGL display driver 句柄（用于 flush 完成通知） =============
+// 必须在 lv_disp_drv_register 之后调用
+void hw_set_lvgl_display(lv_disp_drv_t *disp);
 
 // ============= 调试函数：显示简单测试图案 =============
 void hw_test_display_pattern(void);

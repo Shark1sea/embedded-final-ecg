@@ -9,7 +9,14 @@ idf_component_register(
         esp_adc
         esp_lcd
         driver
+        esp_driver_gpio
+        esp_driver_ledc
+        esp_driver_spi
         esp_timer
+    REQUIRES
+        atanisoft__esp_lcd_ili9488
+        espressif__esp-dsp
+        lvgl__lvgl
     INCLUDE_DIRS
         "."
         "panTompkins"

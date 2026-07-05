@@ -21,13 +21,13 @@ static esp_lcd_panel_io_handle_t lcd_io_handle = NULL;
 static esp_lcd_panel_handle_t lcd_panel_handle = NULL;
 static spi_device_handle_t touch_spi_handle = NULL;
 
-// LVGL display 句柄，由 hw_set_lvgl_display 设置，在 notify_lvgl_flush_ready 中用于调用 lv_display_flush_ready
-static lv_display_t *g_lvgl_disp = NULL;
+// LVGL display driver 句柄，由 hw_set_lvgl_display 设置，在 notify_lvgl_flush_ready 中用于调用 lv_disp_flush_ready
+static lv_disp_drv_t *g_lvgl_disp = NULL;
 
 // 通知 LVGL 刷新完成的回调
 static bool IRAM_ATTR notify_lvgl_flush_ready(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_io_event_data_t *edata, void *user_ctx) {
     if (g_lvgl_disp != NULL) {
-        lv_display_flush_ready(g_lvgl_disp);
+        lv_disp_flush_ready(g_lvgl_disp);
     }
     return false;
 }
@@ -305,7 +305,7 @@ void* hw_get_lcd_panel_handle(void) {
     return (void*)lcd_panel_handle;
 }
 
-void hw_set_lvgl_display(lv_display_t *disp) {
+void hw_set_lvgl_display(lv_disp_drv_t *disp) {
     g_lvgl_disp = disp;
 }
 

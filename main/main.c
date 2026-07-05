@@ -31,7 +31,7 @@
 #include "lv_conf.h"
 #include "JiDianHei_18.c"
 #include "panTompkins/panTompkins.h"
-#define LV_FONT_DECLARE(JiDianHei_18) extern const lv_font_t JiDianHei_18; // 声明字体宏（用于LVGL字体声明）
+LV_FONT_DECLARE(JiDianHei_18); // 声明字体变量（LVGL 内置宏，展开为 extern const lv_font_t JiDianHei_18）
 /*
     以下是结构体类型定义
 */
@@ -190,7 +190,6 @@ static const int DISPLAY_PARAMETER_BITS = 8;
 static const unsigned int DISPLAY_REFRESH_HZ = 40000000;
 static const int DISPLAY_SPI_QUEUE_LEN = 10;
 static const int DISPLAY_SPI_MAX_TRANSFER_SIZE = 32768;
-static const lcd_rgb_element_order_t TFT_COLOR_MODE = COLOR_RGB_ELEMENT_ORDER_BGR;
 // LVGL 缓冲区大小，默认 25 行
 static const size_t LV_BUFFER_SIZE = DISPLAY_HORIZONTAL_PIXELS * 25;
 static const int LVGL_UPDATE_PERIOD_MS = 5;
@@ -304,7 +303,7 @@ static void spi_init();
 // 读取ADC芯片状态
 static void read_adc_chip_state(); 
 // ADC连续模式转换完成回调函数
-static bool IRAM_ATTR adc_conviuous_done_cb(adc_continuous_handle_t handle, 
+static bool adc_conviuous_done_cb(adc_continuous_handle_t handle, 
     const adc_continuous_evt_data_t *edata, void *user_data); 
 // 初始化ADC连续模式驱动
 static void continuous_adc_init(adc_channel_t *channel, 
@@ -334,7 +333,7 @@ static void touch_lvgl_read(lv_indev_drv_t *drv, lv_indev_data_t *data);
 // lvgl刷新回调
 static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map);
 // LVGL 定时器回调，周期性增加 LVGL tick
-static void IRAM_ATTR lvgl_tick_cb(void *param);
+static void lvgl_tick_cb(void *param);
 // 初始化 LVGL 图形库
 static void lvgl_init();
 // 初始化样式
@@ -366,11 +365,11 @@ static int16_t uint16_to_int16(uint16_t x);
 // 将int16_t转换为uint16_t
 static uint16_t int16_to_uint16(int16_t y);
 // 蜂鸣器警告任务函数
-static void buzzer_warning_Task();
+static void buzzer_warning_Task(void *pvParameters);
 // 警告标签任务函数
-static void warning_label_Task();
+static void warning_label_Task(void *pvParameters);
 // ECG采样任务
-static void ecg_sample_Task(); // ECG采样任务函数
+static void ecg_sample_Task(void *pvParameters); // ECG采样任务函数
 /*
     函数声明
 */
@@ -726,7 +725,8 @@ static void display_init()
     const esp_lcd_panel_dev_config_t lcd_config = 
     {
         .reset_gpio_num = DISPLAY_RESET,
-        .color_space = TFT_COLOR_MODE,
+        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,
+        .data_endian = LCD_RGB_DATA_ENDIAN_BIG,
         .bits_per_pixel = 18,
         .flags =
         {
@@ -895,7 +895,7 @@ static void lvgl_touch_init() {
     // 配置输入类型
     indev_drv.type = LV_INDEV_TYPE_POINTER; // 指针设备(触摸/鼠标)
     indev_drv.read_cb = touch_lvgl_read; // 设置读取回调
-    lv_indev_t * touch_indev = lv_indev_drv_register(&indev_drv);// 注册输入设备
+    lv_indev_drv_register(&indev_drv);// 注册输入设备
 }
 /**
  * @brief 创建 LVGL UI 界面
@@ -1309,6 +1309,13 @@ static void lvgl_style_init()
 
 }
 /**
+ * @brief LVGL 动画执行回调包装函数（兼容 lv_anim_exec_xcb_t 签名）
+ */
+static void anim_set_y_cb(void *obj, int32_t y)
+{
+    lv_obj_set_y((lv_obj_t *)obj, (lv_coord_t)y);
+}
+/**
  * @brief 菜单按钮点击事件回调函数
  * @param e 事件对象
  * @return void
@@ -1328,7 +1335,7 @@ static void menu_btn_event_cb(lv_event_t *e)
     lv_anim_t anim;
     lv_anim_init(&anim);
     lv_anim_set_var(&anim, indicator);
-    lv_anim_set_exec_cb(&anim, (lv_anim_exec_xcb_t)lv_obj_set_y);
+    lv_anim_set_exec_cb(&anim, anim_set_y_cb);
     lv_anim_set_values(&anim, indi_y, target_y);
     lv_anim_set_path_cb(&anim, lv_anim_path_ease_in_out);
     lv_anim_set_time(&anim, 300);
@@ -1597,7 +1604,7 @@ uint16_t int16_to_uint16(int16_t y)
  * @brief 蜂鸣器警告任务
  * 此任务负责在心率异常时发出蜂鸣器警告
  */
-static void buzzer_warning_Task()
+static void buzzer_warning_Task(void *pvParameters)
 {
     // 注册当前任务到看门狗
     esp_task_wdt_add(NULL);  // 添加到任务看门狗监控
@@ -1644,7 +1651,7 @@ static void buzzer_warning_Task()
  * @brief 警告标签任务
  * 此任务负责闪烁警告标签以提示用户
  */
-static void warning_label_Task()
+static void warning_label_Task(void *pvParameters)
 {
     esp_task_wdt_add(NULL);  // 添加到任务看门狗监控
     for(uint8_t i = 0; i < 3; i++) // 循环5次
@@ -1672,7 +1679,7 @@ static void warning_label_Task()
  * @brief ECG采样任务
  * 此任务负责从ADC读取ECG数据并处理
  */
-static void ecg_sample_Task()
+static void ecg_sample_Task(void *pvParameters)
 {
     esp_task_wdt_add(NULL);                         // 添加到任务看门狗监控
     esp_err_t ret;                                  // 用于存储函数返回值
@@ -1733,7 +1740,13 @@ static void ecg_sample_Task()
                     if (downsample_count == DOWNSAMPLE_FACTOR - 1) // 达到降采样因子
                     {
                         
-                        int32_t actual = dsps_fird_s16_ae32(&fir, input, &output, 1); // FIR滤波处理
+#if CONFIG_IDF_TARGET_ESP32
+                        int32_t actual = dsps_fird_s16_ae32(&fir, input, &output, 1); // FIR滤波处理（ESP32优化）
+#elif CONFIG_IDF_TARGET_ESP32S3
+                        int32_t actual = dsps_fird_s16_aes3(&fir, input, &output, 1); // FIR滤波处理（ESP32S3优化）
+#else
+                        int32_t actual = dsps_fird_s16_ansi(&fir, input, &output, 1); // FIR滤波处理（通用ANSI）
+#endif
                         downsample_count = 0;
                         memset(input, 0, sizeof(input)); // 清空输入数组
                         if(actual > 0)

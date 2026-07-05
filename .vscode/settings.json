@@ -14,5 +14,6 @@
     "interface/ftdi/esp32_devkitj_v1.cfg",
     "target/esp32.cfg"
   ],
-  "idf.port": "/dev/ttyACM0"
+  "idf.port": "/dev/ttyACM0",
+  "C_Cpp.default.compilerPath": "/usr/bin/gcc"
 }
