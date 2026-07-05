@@ -2,7 +2,10 @@ idf_component_register(
     SRCS
         "main.c"
         "ecg_hardware.c"
+        "ecg_dsp.c"
         "ecg_ai_diagnosis.c"
+        "ecg_ui.c"
+        "JiDianHei_18.c"
         "panTompkins/panTompkins.c"
     PRIV_REQUIRES
         spi_flash

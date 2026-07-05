@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "driver/gpio.h"
+#include "ecg_config.h"
 #include "esp_adc/adc_continuous.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
@@ -14,94 +14,57 @@
 extern "C" {
 #endif
 
-// ============= 引脚定义 =============
-#define ADC_GPIO_NUM                GPIO_NUM_1  // ESP32-S3 可用ADC引脚
-#define ADC_LON_GPIO_NUM            GPIO_NUM_2
-#define ADC_LOP_GPIO_NUM            GPIO_NUM_3
-#define ADC_CONTROL_GPIO_NUM        GPIO_NUM_4
-
-#define DISPLAY_SPI_CLK             GPIO_NUM_14
-#define DISPLAY_SPI_CS              GPIO_NUM_16
-#define DISPLAY_SPI_MOSI            GPIO_NUM_15
-#define DISPLAY_SPI_MISO            GPIO_NUM_2
-#define DISPLAY_DC                  GPIO_NUM_17
-#define DISPLAY_BACKLIGHT           GPIO_NUM_18
-#define DISPLAY_RESET               GPIO_NUM_5
-
-#define TOUCH_SPI_CLK               GPIO_NUM_12
-#define TOUCH_SPI_CS                GPIO_NUM_21
-#define TOUCH_SPI_MOSI              GPIO_NUM_38
-#define TOUCH_SPI_MISO              GPIO_NUM_19
-
-#define BUZZER_GPIO_NUM             GPIO_NUM_13
-
-// ============= ADC配置 =============
-#define ADC_UNIT                    ADC_UNIT_1
-#define ADC_ATTEN                   ADC_ATTEN_DB_12
-#define ADC_SAMPLE_FREQ_HZ          20000
-#define ADC_READ_LEN                256
-
-// ============= 显示配置 =============
-#define DISPLAY_H_RES               480
-#define DISPLAY_V_RES               320
-#define DISPLAY_REFRESH_HZ          40000000
-#define LV_BUFFER_SIZE              (DISPLAY_H_RES * 25)
-
-// ============= 蜂鸣器配置 =============
-#define BUZZER_LEDC_TIMER           LEDC_TIMER_2
-#define BUZZER_LEDC_MODE            LEDC_LOW_SPEED_MODE
-#define BUZZER_LEDC_CHANNEL         LEDC_CHANNEL_1
-#define BUZZER_LEDC_DUTY_RES        LEDC_TIMER_10_BIT
-#define BUZZER_LEDC_FREQ_HZ         2000
-
-// ============= 背光配置 =============
-#define BACKLIGHT_LEDC_MODE         LEDC_LOW_SPEED_MODE
-#define BACKLIGHT_LEDC_CHANNEL      LEDC_CHANNEL_0
-#define BACKLIGHT_LEDC_TIMER        LEDC_TIMER_1
-#define BACKLIGHT_LEDC_TIMER_RES    LEDC_TIMER_10_BIT
-#define BACKLIGHT_LEDC_FREQ_HZ      5000
-#define BACKLIGHT_DEFAULT           80
-#define BACKLIGHT_MIN               50
-#define BACKLIGHT_MAX               100
-
-// ============= ECG状态 =============
+/* ============================================================
+ * 硬件状态结构体
+ * ============================================================ */
 typedef struct {
     bool is_sampling;
     bool is_transmitting;
+    bool lon_ok;
+    bool lop_ok;
 } ecg_hw_state_t;
 
-// ============= 硬件初始化函数 =============
-void hw_gpio_init(void);
-void hw_spi_init(void);
-void hw_adc_init(void);
-void hw_buzzer_init(void);
-void hw_display_init(void);
-void hw_touch_init(void);
-void hw_backlight_init(void);
+/* ============================================================
+ * 硬件初始化
+ * ============================================================ */
+void hw_init_all(void);                     // 全部硬件初始化(一站式)
+void hw_gpio_init(void);                    // GPIO 初始化
+void hw_spi_init(void);                     // SPI 总线初始化
+void hw_adc_init(adc_channel_t channel);    // ADC 连续采样初始化
+void hw_buzzer_init(void);                  // 蜂鸣器 PWM 初始化
+void hw_display_init(void);                 // ILI9488 显示屏初始化
+void hw_touch_init(void);                   // XPT2046 触摸初始化
+void hw_backlight_init(void);               // 背光 PWM 初始化
 
-// ============= 硬件控制函数 =============
-void hw_buzzer_on(uint32_t freq_hz);
-void hw_buzzer_off(void);
-void hw_backlight_set(uint8_t brightness);
-void hw_adc_start(void);
-void hw_adc_stop(void);
-void hw_read_adc_status(bool *lon_ok, bool *lop_ok);
+/* ============================================================
+ * 硬件控制
+ * ============================================================ */
+void hw_buzzer_on(uint32_t freq_hz);        // 蜂鸣器发声
+void hw_buzzer_off(void);                   // 蜂鸣器静音
+void hw_backlight_set(uint8_t pct);         // 背光亮度 0-100
+void hw_adc_start(void);                    // 启动 ADC 采样
+void hw_adc_stop(void);                     // 停止 ADC 采样
+void hw_adc_deinit(void);                   // 释放 ADC 资源
+void hw_adc_register_done_cb(adc_continuous_evt_cbs_t *cbs); // 注册 ADC 完成回调
 
-// ============= 数据获取函数 =============
-bool hw_adc_read(uint8_t *buffer, uint32_t buf_size, uint32_t *out_size);
+/* ============================================================
+ * 硬件状态查询
+ * ============================================================ */
+void hw_read_adc_status(bool *lon_ok, bool *lop_ok);     // 读取导联状态
+bool hw_adc_read(uint8_t *buf, uint32_t len, uint32_t *out_len); // 读取 ADC 数据
+ecg_hw_state_t* hw_get_state(void);                     // 获取硬件状态
+adc_continuous_handle_t hw_get_adc_handle(void);        // 获取 ADC 句柄
 
-// ============= 状态获取 =============
-ecg_hw_state_t* hw_get_state(void);
+/* ============================================================
+ * LVGL 集成
+ * ============================================================ */
+void hw_set_lvgl_disp(lv_disp_drv_t *disp);             // 设置 LVGL 显示驱动
+esp_lcd_panel_handle_t hw_get_lcd_panel(void);          // 获取 LCD 面板句柄
 
-// ============= 显示屏句柄获取 =============
-void* hw_get_lcd_panel_handle(void);
-
-// ============= 设置 LVGL display driver 句柄（用于 flush 完成通知） =============
-// 必须在 lv_disp_drv_register 之后调用
-void hw_set_lvgl_display(lv_disp_drv_t *disp);
-
-// ============= 调试函数：显示简单测试图案 =============
-void hw_test_display_pattern(void);
+/* ============================================================
+ * 触摸读取
+ * ============================================================ */
+bool hw_touch_read(uint16_t *x, uint16_t *y);           // 读取触摸坐标
 
 #ifdef __cplusplus
 }

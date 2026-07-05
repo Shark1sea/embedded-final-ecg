@@ -1,19 +1,6 @@
 {
-  "idf.currentSetup": "/home/sunyh/.espressif/v6.0.1/esp-idf",
-  "idf.customExtraVars": {
-    "IDF_TARGET": "esp32s3"
-  },
-  "clangd.path": "/home/sunyh/.espressif/tools/esp-clang/esp-20.1.1_20250829/esp-clang/bin/clangd",
-  "clangd.arguments": [
-    "--background-index",
-    "--query-driver=**",
-    "--compile-commands-dir=/home/sunyh/projects/ecg/build"
-  ],
-  "idf.flashType": "UART",
-  "idf.openOcdConfigs": [
-    "interface/ftdi/esp32_devkitj_v1.cfg",
-    "target/esp32.cfg"
-  ],
-  "idf.port": "/dev/ttyACM0",
-  "C_Cpp.default.compilerPath": "/usr/bin/gcc"
+  "C_Cpp.intelliSenseEngine": "default",
+  "idf.extensionActivationMode": "always",
+  "idf.flashType": "JTAG",
+  "idf.port": "/dev/ttyACM0"
 }
