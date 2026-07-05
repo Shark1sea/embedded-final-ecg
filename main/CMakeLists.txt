@@ -1,0 +1,16 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "ecg_hardware.c"
+        "ecg_ai_diagnosis.c"
+        "panTompkins/panTompkins.c"
+    PRIV_REQUIRES
+        spi_flash
+        esp_adc
+        esp_lcd
+        driver
+        esp_timer
+    INCLUDE_DIRS
+        "."
+        "panTompkins"
+)
